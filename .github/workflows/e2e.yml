@@ -37,8 +37,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           reset_to_main() {
-            git fetch origin main
-            git switch -C main origin/main
+            git fetch origin master
+            git switch -C master origin/master
           }
 
           emit_consumer_log_hint() {
@@ -95,7 +95,7 @@ jobs:
 
             git commit -m "[e2e] ${kind} demo run=${GITHUB_RUN_ID}"
             git push -u origin "$br" --force-with-lease
-            gh pr create --base main --head "$br" --title "$title" --body "$body"
+            gh pr create --base master --head "$br" --title "$title" --body "$body"
 
             local pr_num pr_url
             pr_num="$(gh pr list --head "$br" --state open --json number --jq '.[0].number')"
