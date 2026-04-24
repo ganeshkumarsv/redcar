@@ -95,24 +95,6 @@ jobs:
             git checkout "$db"
           }
 
-          # GitHub may refuse reopen if origin/<head> was recreated from default while PR was closed.
-          sync_remote_head_to_oid() {
-            local br="$1" want="$2"
-            git fetch origin "$db"
-            local tip
-            tip="$(git ls-remote origin "refs/heads/${br}" | awk 'NR==1 {print $1}')"
-            if [ -z "$tip" ]; then
-              git fetch origin "$want" 2>/dev/null || true
-              git push origin "${want}:refs/heads/${br}"
-              return
-            fi
-            if [ "$tip" = "$want" ]; then
-              return
-            fi
-            git fetch origin "$want" 2>/dev/null || true
-            git push --force-with-lease="refs/heads/${br}:${tip}" origin "${want}:refs/heads/${br}"
-          }
-
           reopen_pr() {
             local pr="$1"
             printf '%s\n' '{"state":"open"}' | gh api --method PATCH \
@@ -156,7 +138,6 @@ jobs:
             fi
 
             if [ "$state" = "CLOSED" ]; then
-              # sync_remote_head_to_oid "$br" "$oid"
               _sleep
               reopen_pr "$pr"
               _sleep
