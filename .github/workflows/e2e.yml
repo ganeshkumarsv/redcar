@@ -156,7 +156,7 @@ jobs:
             fi
 
             if [ "$state" = "CLOSED" ]; then
-              sync_remote_head_to_oid "$br" "$oid"
+              # sync_remote_head_to_oid "$br" "$oid"
               _sleep
               reopen_pr "$pr"
               _sleep
