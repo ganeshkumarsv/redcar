@@ -137,19 +137,19 @@ jobs:
             fi
 
             local head_actual
-            head_actual="$(gh pr view "$pr_num" --json headRefName --jq '-r .headRefName')"
+            head_actual="$(gh pr view "$pr_num" --json headRefName | jq -r '.headRefName')"
             if [ "$head_actual" != "$br" ]; then
               echo "e2e-source-signal: PR #${pr_num} has head \`${head_actual}\`; expected \`${br}\`. Fix the variable or the PR." >&2
               exit 1
             fi
 
-            merged_at="$(gh pr view "$pr_num" --json mergedAt --jq '-r .mergedAt')"
+            merged_at="$(gh pr view "$pr_num" --json mergedAt | jq -r '.mergedAt')"
             if [ -n "$merged_at" ] && [ "$merged_at" != "null" ]; then
               echo "e2e-source-signal: PR #${pr_num} (head ${br}) is merged; cannot reuse fixed-PR flow. Open a new PR from the same head branch or fix manually." >&2
               exit 1
             fi
 
-            state="$(gh pr view "$pr_num" --json state --jq '-r .state')"
+            state="$(gh pr view "$pr_num" --json state | jq -r '.state')"
             if [ "$state" = "OPEN" ]; then
               gh pr close "$pr_num" --comment "e2e-source-signal: align closed before cycle (run ${GITHUB_RUN_ID}). **Do not delete head branch \`${br}\`.**"
             elif [ "$state" != "CLOSED" ]; then
@@ -164,7 +164,7 @@ jobs:
             gh pr close "$pr_num" --comment "e2e-source-signal: cycle finished (run ${GITHUB_RUN_ID}). **Do not delete head branch \`${br}\`.**"
 
             local pr_url
-            pr_url="$(gh pr view "$pr_num" --json url --jq '-r .url')"
+            pr_url="$(gh pr view "$pr_num" --json url | jq -r '.url')"
             emit_consumer_log_hint "$kind" "$pr_url" "$pr_num"
           }
 
