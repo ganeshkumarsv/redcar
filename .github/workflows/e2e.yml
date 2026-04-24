@@ -11,9 +11,10 @@
 # Demo payloads are **defined in this workflow** (`write_*_demo`) and written into `e2e/` each run.
 # No committed template files are required: the head branch may match the default branch until the first
 # successful run, which then adds/commits `e2e/` on the head branch so the open PR gains a real diff.
-# Each run (per PR): align **closed** → **reopen** (opened/reopened) → reset head branch to
-# **origin/<default>**, write `e2e/` + stamp, **one new commit**, **force-push** (replaces prior
-# branch commits; synchronize) → **close**. Branch protection must allow force-push for this actor.
+# Each run (per PR): align **closed** → **reopen** (opened/reopened) → **keep existing head** when
+# `origin/<signal-branch>` exists (otherwise bootstrap from **origin/<default>**), write `e2e/` +
+# stamp, **one new commit on top**, **push** (`--force-with-lease` so we do not clobber a moved remote)
+# → **close**.
 # This yields reopen + synchronize + close and avoids relying on merge.
 name: Source signal E2E (synthetic PR)
 
@@ -96,10 +97,16 @@ jobs:
             local kind="$1" br="$2"
 
             git fetch origin "$db"
-            git fetch origin "$br"
+            git fetch origin "$br" 2>/dev/null || true
 
-            # Replace branch history with default-branch tip + one new commit (only e2e/).
-            git checkout -B "$br" "origin/${db}"
+            if [ -n "$(git ls-remote origin "refs/heads/${br}")" ]; then
+              git fetch origin "$br"
+              echo "e2e-source-signal: committing on top of existing head origin/${br}"
+              git checkout -B "$br" "origin/${br}"
+            else
+              echo "e2e-source-signal: bootstrapping ${br} from origin/${db} (no remote head yet)"
+              git checkout -B "$br" "origin/${db}"
+            fi
 
             rm -rf e2e
             mkdir -p e2e
@@ -117,7 +124,7 @@ jobs:
 
             git add e2e
             git commit -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
-            git push --force origin "refs/heads/${br}"
+            git push --force-with-lease origin "refs/heads/${br}"
 
             git checkout "$db"
           }
@@ -167,7 +174,10 @@ jobs:
 
             cur="$(gh pr view "$pr_num" --json state | jq -r '.state')"
             if [ "$cur" != "OPEN" ]; then
-              gh pr reopen "$pr_num"
+              echo "e2e-source-signal: opening PR #${pr_num} (${kind}, head ${br}) via REST (avoids flaky GraphQL reopenPullRequest)."
+              printf '%s\n' '{"state":"open"}' | gh api --method PATCH \
+                -H "Accept: application/vnd.github+json" \
+                "repos/${GITHUB_REPOSITORY}/pulls/${pr_num}" --input -
             fi
 
             apply_template_and_push "$kind" "$br"
