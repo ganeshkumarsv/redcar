@@ -86,20 +86,20 @@ jobs:
 
           push_e2e_cycle() {
             local kind="$1" br="$2"
-            git fetch origin "$db"
-            git checkout -B "$br" "origin/${db}"
+            git fetch -q origin "$db"
+            git checkout -q -B "$br" "origin/${db}"
             write_e2e_files "$kind"
             git add e2e
-            git commit -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
-            git push --force origin "refs/heads/${br}"
-            git checkout "$db"
+            git commit -q -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
+            git push -q --force origin "refs/heads/${br}"
+            git checkout -q "$db"
           }
 
           reopen_pr() {
             local pr="$1"
             printf '%s\n' '{"state":"open"}' | gh api --method PATCH \
               -H "Accept: application/vnd.github+json" \
-              "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --input -
+              "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --input - >/dev/null
           }
 
           cycle_one() {
@@ -148,7 +148,7 @@ jobs:
 
             push_e2e_cycle "$kind" "$br"
             _sleep
-            gh pr close "$pr"
+            gh pr close "$pr" >/dev/null
             _sleep
             log_hint "$kind" "$pr_url" "$pr"
           }
