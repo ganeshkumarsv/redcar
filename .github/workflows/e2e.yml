@@ -102,7 +102,7 @@ jobs:
               "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --input - >/dev/null
           }
 
-          cycle_one() {
+          run_pr_path() {
             local kind="$1"
             local br="e2e-source-signal/signal-${kind}"
             local pr
@@ -154,7 +154,7 @@ jobs:
           }
 
           echo "e2e-source-signal run=${GITHUB_RUN_ID} branch=${db} PRs=${E2E_SOURCE_SIGNAL_PR_BENIGN:-?}/${E2E_SOURCE_SIGNAL_PR_MALICIOUS:-?}"
-          cycle_one benign
+          run_pr_path benign
           _sleep
-          cycle_one malicious
+          run_pr_path malicious
           echo "e2e-source-signal: done."
