@@ -11,8 +11,9 @@
 # Demo payloads are **defined in this workflow** (`write_*_demo`) and written into `e2e/` each run.
 # No committed template files are required: the head branch may match the default branch until the first
 # successful run, which then adds/commits `e2e/` on the head branch so the open PR gains a real diff.
-# Each run (per PR): align **closed** → **reopen** (opened/reopened) → write `e2e/` + stamp,
-# **commit + push** (synchronize) → **close**.
+# Each run (per PR): align **closed** → **reopen** (opened/reopened) → reset head branch to
+# **origin/<default>**, write `e2e/` + stamp, **one new commit**, **force-push** (replaces prior
+# branch commits; synchronize) → **close**. Branch protection must allow force-push for this actor.
 # This yields reopen + synchronize + close and avoids relying on merge.
 name: Source signal E2E (synthetic PR)
 
@@ -97,7 +98,8 @@ jobs:
             git fetch origin "$db"
             git fetch origin "$br"
 
-            git checkout -B "$br" "origin/${br}"
+            # Replace branch history with default-branch tip + one new commit (only e2e/).
+            git checkout -B "$br" "origin/${db}"
 
             rm -rf e2e
             mkdir -p e2e
@@ -110,13 +112,12 @@ jobs:
 
             {
               echo "github.run_id=${GITHUB_RUN_ID}"
-              echo "github.run_attempt=${GITHUB_RUN_ATTEMPT:-1}"
               echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             } > e2e/.e2e_source_signal_stamp
 
             git add e2e
             git commit -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
-            git push origin "refs/heads/${br}"
+            git push --force origin "refs/heads/${br}"
 
             git checkout "$db"
           }
