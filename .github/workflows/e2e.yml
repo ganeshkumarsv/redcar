@@ -86,13 +86,13 @@ jobs:
 
           push_e2e_cycle() {
             local kind="$1" br="$2"
-            git fetch -q origin "$db"
-            git checkout -q -B "$br" "origin/${db}"
+            git fetch origin "$db"
+            git checkout -B "$br" "origin/${db}"
             write_e2e_files "$kind"
             git add e2e
-            git commit -q -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
-            git push -q --force origin "refs/heads/${br}"
-            git checkout -q "$db"
+            git commit -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
+            git push --force origin "refs/heads/${br}"
+            git checkout "$db"
           }
 
           reopen_pr() {
@@ -148,7 +148,7 @@ jobs:
 
             push_e2e_cycle "$kind" "$br"
             _sleep
-            gh pr close "$pr" >/dev/null
+            gh pr close "$pr"
             _sleep
             log_hint "$kind" "$pr_url" "$pr"
           }
