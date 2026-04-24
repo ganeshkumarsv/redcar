@@ -11,10 +11,10 @@
 # Demo payloads are **defined in this workflow** (`write_*_demo`) and written into `e2e/` each run.
 # No committed template files are required: the head branch may match the default branch until the first
 # successful run, which then adds/commits `e2e/` on the head branch so the open PR gains a real diff.
-# Each run (per PR): if **closed**, align `origin/<head>` to `headRefOid` and **reopen** first so the
-# branch is never force-pushed while the PR is closed. If already **open** (e.g. last run failed after
-# reopen), push on the open PR. Then **keep existing head** when possible, write `e2e/` + stamp, commit,
-# **push** (`--force-with-lease`) **while open**, then **close** (synchronize happens before close).
+# Each run (per PR): if **closed**, align `origin/<head>` to `headRefOid` and **reopen** first. If
+# **open**, push without a pre-close. **apply_template** always resets the head branch to
+# **origin/<default>**, adds **one** `e2e/` commit, and **force-pushes** so prior commits on that branch
+# are replaced (no stacked history). Then **close**.
 name: Source signal E2E (synthetic PR)
 
 on:
@@ -98,14 +98,9 @@ jobs:
             git fetch origin "$db"
             git fetch origin "$br" 2>/dev/null || true
 
-            if [ -n "$(git ls-remote origin "refs/heads/${br}")" ]; then
-              git fetch origin "$br"
-              echo "e2e-source-signal: committing on top of existing head origin/${br}"
-              git checkout -B "$br" "origin/${br}"
-            else
-              echo "e2e-source-signal: bootstrapping ${br} from origin/${db} (no remote head yet)"
-              git checkout -B "$br" "origin/${db}"
-            fi
+            # Exactly one new tip per run: default branch + single e2e commit (overrides prior branch commits).
+            echo "e2e-source-signal: resetting ${br} to origin/${db} then one e2e commit."
+            git checkout -B "$br" "origin/${db}"
 
             rm -rf e2e
             mkdir -p e2e
@@ -123,7 +118,7 @@ jobs:
 
             git add e2e
             git commit -m "e2e-source-signal: cycle run ${GITHUB_RUN_ID}"
-            git push --force-with-lease origin "refs/heads/${br}"
+            git push --force origin "refs/heads/${br}"
 
             git checkout "$db"
           }
